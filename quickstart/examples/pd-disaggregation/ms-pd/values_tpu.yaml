@@ -1,0 +1,148 @@
+multinode: false
+
+modelArtifacts:
+  uri: "Qwen/Qwen2.5-0.5B-Instruct"
+  size: 100Gi
+  authSecretName: "llm-d-hf-token"
+  name: "Qwen/Qwen2.5-0.5B-Instruct"
+
+routing:
+  modelName: Qwen/Qwen2.5-0.5B-Instruct
+  servicePort: 8000
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      # name: infra-pd-inference-gateway # set in helmfile
+
+  proxy:
+    image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.2.0
+    connector: nixlv2
+    secure: false
+
+  inferenceModel:
+    criticality: Critical
+    create: true
+
+  inferencePool:
+    create: false
+    # name: gaie-pd # set in helmfile
+
+  httpRoute:
+    create: false
+
+  epp:
+    create: false
+
+decode:
+  create: true
+  replicas: 1
+  extraConfig:
+    nodeSelector:
+      cloud.google.com/gke-tpu-topology: "2x4"
+      cloud.google.com/gke-tpu-accelerator: "tpu-v6e-slice"
+  monitoring:
+    podmonitor:
+      enabled: false
+      portName: "metrics" # decode vLLM service port (from routing.proxy.targetPort)
+      path: "/metrics"
+      interval: "30s"
+  containers:
+  - name: "vllm"
+    image: <tpu_image>
+    modelCommand: vllmServe
+    args:
+      - "--tensor-parallel-size"
+      - "8"
+      - "--kv-transfer-config"
+      - '{"kv_connector":"TPUConnector", "kv_connector_module_path" : "tpu_commons.distributed.tpu_connector", "kv_role":"kv_producer", "kv_ip" : "$(POD_IP)"}'
+    env:
+      - name: POD_IP
+        valueFrom:
+          fieldRef:
+            fieldPath: status.podIP
+    ports:
+      - containerPort: 8200
+        name: metrics
+        protocol: TCP
+    resources:
+      limits:
+        memory: 64Gi
+        cpu: "16"
+        google.com/tpu: 8
+      requests:
+        memory: 64Gi
+        cpu: "16"
+        google.com/tpu: 8
+    volumeMounts:
+    - name: metrics-volume
+      mountPath: /.config
+    - name: shm
+      mountPath: /dev/shm
+    - name: torch-compile-cache
+      mountPath: /.cache
+  volumes:
+  - name: metrics-volume
+    emptyDir: {}
+  - name: shm
+    emptyDir:
+      medium: Memory
+      sizeLimit: "16Gi"
+  - name: torch-compile-cache
+    emptyDir: {}
+
+prefill:
+  create: true
+  replicas: 1
+  extraConfig:
+    nodeSelector:
+      cloud.google.com/gke-tpu-topology: "2x4"
+      cloud.google.com/gke-tpu-accelerator: "tpu-v6e-slice"
+  monitoring:
+    podmonitor:
+      enabled: false
+      portName: "metrics" # prefill vLLM service port (from routing.servicePort)
+      path: "/metrics"
+      interval: "30s"
+  containers:
+  - name: "vllm"
+    image: <tpu_image>
+    modelCommand: vllmServe
+    args:
+      - "--tensor-parallel-size"
+      - "8"
+      - "--kv-transfer-config"
+      - '{"kv_connector":"TPUConnector", "kv_connector_module_path" : "tpu_commons.distributed.tpu_connector", "kv_role":"kv_producer", "kv_ip" : "$(POD_IP)"}'
+    env:
+      - name: POD_IP
+        valueFrom:
+          fieldRef:
+            fieldPath: status.podIP
+    ports:
+      - containerPort: 8000
+        name: metrics
+        protocol: TCP
+    resources:
+      limits:
+        memory: 64Gi
+        cpu: "8"
+        google.com/tpu: 8
+      requests:
+        memory: 64Gi
+        cpu: "8"
+        google.com/tpu: 8
+    volumeMounts:
+    - name: metrics-volume
+      mountPath: /.config
+    - name: shm
+      mountPath: /dev/shm
+    - name: torch-compile-cache
+      mountPath: /.cache
+  volumes:
+  - name: metrics-volume
+    emptyDir: {}
+  - name: shm
+    emptyDir:
+      medium: Memory
+      sizeLimit: "16Gi"
+  - name: torch-compile-cache
+    emptyDir: {}
